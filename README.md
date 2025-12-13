@@ -5,6 +5,4 @@ texture & Model form my self
 thanks to AE2 auther!  
 https://github.com/AppliedEnergistics/Applied-Energistics-2  
 
-<p align="center">
-    <img width="690" src="demo.gif" alt="title">  
-</p>
+<img src="demo.gif" />
