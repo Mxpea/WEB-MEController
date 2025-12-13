@@ -5,4 +5,4 @@ texture & Model form my self
 thanks to AE2 auther!  
 https://github.com/AppliedEnergistics/Applied-Energistics-2  
 
-<img src="demo.gif" />
+![效果](./demo.gif "效果")
