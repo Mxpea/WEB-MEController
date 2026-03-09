@@ -492,7 +492,27 @@ renderer.domElement.addEventListener('pointerleave', () => {
   lastInteractTime = performance.now();
 });
 
-// For click ripples, wait let's grep 'addEventListener('click')' to update that too if it exists.
+window.addEventListener('keydown', event => {
+  if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
+    event.preventDefault(); // 阻止默认的页面滚动
+    const step = 0.5;
+    if (event.key === 'ArrowUp') {
+      defaultCamSpherical.radius = Math.max(1.5, defaultCamSpherical.radius - step);
+    } else {
+      defaultCamSpherical.radius = Math.min(20.0, defaultCamSpherical.radius + step);
+    }
+    
+    // 即时平滑生效：通过更新当前实际位置的 spherical 来让 OrbitControls 下一帧跟进
+    const currentSpherical = new THREE.Spherical().setFromVector3(
+      camera.position.clone().sub(controls.target)
+    );
+    // 这里我们直接赋予目标半径，配合后面的 lerp 会有一定的滑动缓冲
+    currentSpherical.radius = defaultCamSpherical.radius;
+    camera.position.copy(new THREE.Vector3().setFromSpherical(currentSpherical).add(controls.target));
+    
+    lastInteractTime = performance.now();
+  }
+});
 
 renderer.domElement.addEventListener('click', event => {
   if (!outerModel) return;
@@ -737,7 +757,8 @@ function animate(time = 0) {
         particlePositions[idx + 2]
       );
       const dist = relPos.length();
-      const maxRadius = 12.0;
+      // 继续限制扩散半径，使得粒子更聚集在模型核心附近（从之前 12.0 缩小到了 3.5）
+      const maxRadius = 3.5;
       if (dist > maxRadius) {
         // 超出范围的粒子直接移回 lightAnchor 中心，并清除吸引力动量
         particlePositions[idx + 0] = 0;
