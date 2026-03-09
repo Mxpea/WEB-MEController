@@ -492,6 +492,8 @@ renderer.domElement.addEventListener('pointerleave', () => {
   lastInteractTime = performance.now();
 });
 
+let isViewLocked = false;
+
 window.addEventListener('keydown', event => {
   if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
     event.preventDefault(); // 阻止默认的页面滚动
@@ -510,6 +512,17 @@ window.addEventListener('keydown', event => {
     currentSpherical.radius = defaultCamSpherical.radius;
     camera.position.copy(new THREE.Vector3().setFromSpherical(currentSpherical).add(controls.target));
     
+    lastInteractTime = performance.now();
+  }
+  
+  // 按下 "\" 键切换视角锁定
+  if (event.key === '\\') {
+    isViewLocked = !isViewLocked;
+    controls.enableRotate = !isViewLocked; // 禁止/允许鼠标拖拽旋转
+    controls.enableZoom = !isViewLocked;   // 禁止/允许鼠标滚轮缩放
+    
+    // 如果锁定，可以选择在UI或控制台提示用户
+    console.log(isViewLocked ? '视角已锁定' : '视角已解锁');
     lastInteractTime = performance.now();
   }
 });
