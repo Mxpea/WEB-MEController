@@ -5,11 +5,20 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>MEController</title>
   <style>
-    body { margin: 0; overflow: hidden; background: #000; }
+    @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;600&display=swap');
+    body {
+      margin: 0;
+      overflow: hidden;
+      background: radial-gradient(1200px 800px at 20% 20%, rgba(0, 246, 255, 0.12), transparent 60%),
+                  radial-gradient(1000px 700px at 80% 30%, rgba(255, 43, 214, 0.12), transparent 60%),
+                  linear-gradient(180deg, #05030a 0%, #0a0d18 55%, #05030a 100%);
+      font-family: 'Space Grotesk', 'Orbitron', sans-serif;
+    }
     /* 提示框固定在左上角，提示模型加载状态 */
     #hint {
       position: absolute; left: 12px; top: 12px; color: #ddd; font-family: sans-serif;
-      background: rgba(0,0,0,0.45); padding: 8px 10px; border-radius: 6px; font-size: 13px;
+      background: rgba(6, 10, 20, 0.6); padding: 8px 10px; border-radius: 6px; font-size: 13px;
+      box-shadow: 0 0 14px rgba(0, 246, 255, 0.2);
     }
   </style>
 </head>
@@ -31,7 +40,8 @@ import { GLTFLoader } from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/
 
 const containerHint = document.getElementById('hint');
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x000000); // 设置黑色背景提升体积光对比
+scene.background = null;
+scene.fog = new THREE.FogExp2(0x05020a, 0.045);
 
 const camera = new THREE.PerspectiveCamera(60, innerWidth / innerHeight, 0.1, 100); // 60°视野，近裁剪 0.1，远裁剪 100
 camera.position.set(3.2, 3.8, 4.2); // 设置初始视角便于看到模型正面与光源
@@ -39,19 +49,57 @@ camera.position.set(3.2, 3.8, 4.2); // 设置初始视角便于看到模型正�
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setSize(innerWidth, innerHeight);
 renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
-renderer.outputEncoding = THREE.sRGBEncoding;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.2;
+renderer.physicallyCorrectLights = true;
+renderer.setClearColor(0x000000, 0);
 document.body.appendChild(renderer.domElement);
 
 
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;         // 轨道控制器启用阻尼
-controls.autoRotate = false;            // 让摄像机自动围绕目标转
+controls.autoRotate = true;            // 让摄像机自动围绕目标转（仍可用鼠标拖拽）
 controls.autoRotateSpeed = 1.4;        // 自动旋转速度（越大越快）
+controls.enablePan = false;
 
-scene.add(new THREE.AmbientLight(0x404040, 10.0)); // 环境光防止场景完全黑
-const dirLight = new THREE.DirectionalLight(0xffffff, 0.6);
+scene.add(new THREE.AmbientLight(0x101018, 1.4)); // 环境光防止场景完全黑
+const dirLight = new THREE.DirectionalLight(0xffffff, 0.45);
 dirLight.position.set(5, 8, 4); // 模拟顶部偏右的光线方向
 scene.add(dirLight);
+const neonGroup = new THREE.Group();
+const cyanLight = new THREE.PointLight(0x00f6ff, 8, 22, 2.1);
+cyanLight.position.set(2.2, 1.6, 1.8);
+const magentaLight = new THREE.PointLight(0xff2bd6, 6.5, 18, 2.0);
+magentaLight.position.set(-2.0, 1.2, -1.8);
+const violetLight = new THREE.PointLight(0x7a5cff, 4.5, 16, 2.2);
+violetLight.position.set(0.6, 2.4, -2.8);
+neonGroup.add(cyanLight, magentaLight, violetLight);
+scene.add(neonGroup);
+
+const raycaster = new THREE.Raycaster();
+const pointer = new THREE.Vector2();
+const outerScanMaterials = [];
+let outerBoundsRadius = 1.0;
+const MAX_RIPPLES = 4;
+const rippleStates = Array.from({ length: MAX_RIPPLES }, () => ({
+  active: false,
+  radius: -1,
+  age: 0,
+  center: new THREE.Vector3()
+}));
+let currentRippleIndex = 0;
+
+const scanState = {
+  maxRadius: 2.5,
+  speed: 2.0,
+  width: 0.12,
+  duration: 1.6,
+  lastHit: new THREE.Vector3(),
+  hasHit: false
+};
+let lastScanTime = 0;
+const scanCooldownMs = 150;
 
 const loader = new GLTFLoader();
 let outerModel = null;
@@ -60,10 +108,6 @@ let innerModel = null;
 const lightAnchor = new THREE.Object3D();
 scene.add(lightAnchor);
 
-const orbitRadius = 8.2;
-const orbitHeightOffset = 1.8;
-const orbitVerticalRange = 0.18;
-const orbitSpeed = 0.00024;        // 旋转角速度（rad/ms）
 
 /* 渲染到纹理：后处理需要先把场景渲染到 renderTarget */
 const renderTarget = new THREE.WebGLRenderTarget(innerWidth, innerHeight, {
@@ -180,6 +224,11 @@ const particleCount = 140;
 const particlePositions = new Float32Array(particleCount * 3);
 const particleInfos = [];
 const particleColors = new Float32Array(particleCount * 3);
+const particlePalette = [
+  new THREE.Color(0x00f6ff),
+  new THREE.Color(0xff2bd6),
+  new THREE.Color(0x7a5cff)
+];
 for (let i = 0; i < particleCount; i++) {
   const radius = 0.15 + Math.random() * 0.16; // 半径由原来的 0.35~0.95 缩小到 0.15~0.4
   const theta = Math.random() * Math.PI * 2;
@@ -188,13 +237,15 @@ for (let i = 0; i < particleCount; i++) {
   particlePositions[i * 3 + 1] = Math.cos(phi) * radius * 0.6; // 垂直范围也更紧凑
   particlePositions[i * 3 + 2] = Math.sin(phi) * Math.sin(theta) * radius;
   // 每个粒子存随机速度和偏移，便于独立运动
-  const baseColor = new THREE.Color().setHSL(Math.random(), 0.7, 0.6);
+  const paletteIndex = Math.floor(Math.random() * particlePalette.length);
+  const baseColor = particlePalette[paletteIndex].clone().multiplyScalar(0.7 + Math.random() * 0.4);
   particleInfos.push({
     velocity: new THREE.Vector3(
       (Math.random() - 0.5) * 0.002,
       (Math.random() - 0.5) * 0.002,
       (Math.random() - 0.5) * 0.002
     ),
+    mouseVelocity: new THREE.Vector3(0, 0, 0),
     drift: Math.random() * Math.PI * 2,
     baseColor
   });
@@ -225,48 +276,237 @@ function loadGLB(path) {
   });
 }
 
-Promise.all([loadGLB('./outer.glb'), loadGLB('./inner.glb')])
-  .then(([outer, inner]) => {
-    outerModel = outer;
-    innerModel = inner;
+function applyOuterMaterialEffects(material) {
+  if (material.userData.hasOuterShader) return;
+  material.onBeforeCompile = shader => {
+    // Arrays for multiple ripples
+    const centersArray = new Array(MAX_RIPPLES).fill().map(() => new THREE.Vector3());
+    const radiiArray = new Array(MAX_RIPPLES).fill().map(() => -1.0);
+    const activeArray = new Array(MAX_RIPPLES).fill().map(() => 0.0);
 
-    outerModel.traverse(node => {
-      if (node.isMesh) {
-        node.material = node.material.clone();
-        node.material.transparent = false;
-        node.material.depthWrite = true;
-        node.material.depthTest = true;
-        node.material.emissive = new THREE.Color(0.2, 0.25, 0.35);
-        node.material.emissiveIntensity = 0.8;
-      }
+    shader.uniforms.rimColor = { value: new THREE.Color(0x2da8ff) };
+    shader.uniforms.rimStrength = { value: 0.3 };
+    shader.uniforms.scanCenters = { value: centersArray };
+    shader.uniforms.scanRadii = { value: radiiArray };
+    shader.uniforms.scanWidth = { value: scanState.width };
+    shader.uniforms.scanIntensity = { value: 2.0 };
+    shader.uniforms.scanColor = { value: new THREE.Color(0x6bff7a) };
+    shader.uniforms.scanActiveFlags = { value: activeArray };
+    shader.uniforms.scanGridScale = { value: 10.0 };
+
+    shader.vertexShader = shader.vertexShader
+      .replace(
+        '#include <common>',
+        '#include <common>\n  varying vec3 vCustomWorldPos;'
+      )
+      .replace(
+        '#include <begin_vertex>',
+        '#include <begin_vertex>\n  vCustomWorldPos = (modelMatrix * vec4(transformed, 1.0)).xyz;'
+      );
+
+    shader.fragmentShader = shader.fragmentShader
+      .replace(
+        '#include <common>',
+        `#include <common>
+  varying vec3 vCustomWorldPos;
+  uniform vec3 rimColor;
+  uniform float rimStrength;
+  uniform vec3 scanCenters[${MAX_RIPPLES}];
+  uniform float scanRadii[${MAX_RIPPLES}];
+  uniform float scanActiveFlags[${MAX_RIPPLES}];
+  uniform float scanWidth;
+  uniform float scanIntensity;
+  uniform vec3 scanColor;
+  uniform float scanGridScale;`
+      )
+      .replace(
+        '#include <normal_fragment_begin>',
+        '#include <normal_fragment_begin>\n  vec3 viewDir = normalize(cameraPosition - vCustomWorldPos);\n  float rimFactor = pow(1.0 - max(dot(normalize(normal), viewDir), 0.0), 3.0);'
+      )
+      .replace(
+        '#include <emissivemap_fragment>',
+        [
+          '#include <emissivemap_fragment>',
+          'totalEmissiveRadiance += rimColor * rimFactor * rimStrength;',
+          `for(int i = 0; i < ${MAX_RIPPLES}; i++) {`,
+          '  if(scanActiveFlags[i] > 0.5) {',
+          '    float scanDist = distance(vCustomWorldPos, scanCenters[i]);',
+          '    float wave = smoothstep(scanRadii[i] + scanWidth, scanRadii[i], scanDist) * smoothstep(scanRadii[i] - scanWidth, scanRadii[i], scanDist);',
+          '    vec3 gridUv = vCustomWorldPos * scanGridScale;',
+          '    vec3 gridLine = abs(fract(gridUv) - 0.5);',
+          '    float gridMask = step(0.48, gridLine.x) + step(0.48, gridLine.y) + step(0.48, gridLine.z);',
+          '    gridMask = clamp(gridMask, 0.0, 1.0);',
+          '    float trailFade = max(0.0, 1.0 - (scanRadii[i] / 2.5));', // fade out at edges
+          '    float finalScan = wave * scanIntensity * trailFade;',
+          '    totalEmissiveRadiance += scanColor * finalScan * 0.25;',
+          '    totalEmissiveRadiance += scanColor * finalScan * gridMask * 3.0;',
+          '  }',
+          '}'
+        ].join('\n')
+      );
+    material.userData.outerShaderUniforms = shader.uniforms;
+  };
+  material.userData.hasOuterShader = true;
+  material.needsUpdate = true;
+}
+
+const modelPaths = ['./outer.glb', './inner.glb'];
+const loadTimeoutMs = 10000;
+let loadAttempt = 0;
+let retryTimer = null;
+
+function clearRetryTimer() {
+  if (retryTimer) {
+    clearTimeout(retryTimer);
+    retryTimer = null;
+  }
+}
+
+function scheduleRetry(message) {
+  clearRetryTimer();
+  containerHint.style.display = 'block';
+  containerHint.innerText = message;
+  retryTimer = setTimeout(() => {
+    loadModels();
+  }, loadTimeoutMs);
+}
+
+function resetModels() {
+  if (outerModel) scene.remove(outerModel);
+  if (innerModel) scene.remove(innerModel);
+  outerModel = null;
+  innerModel = null;
+  outerScanMaterials.length = 0;
+  scanState.active = false;
+  scanState.radius = -1;
+  scanState.age = 0;
+  scanState.hasHit = false;
+}
+
+function loadModels() {
+  clearRetryTimer();
+  resetModels();
+  const attemptId = ++loadAttempt;
+  containerHint.style.display = 'block';
+  containerHint.innerText = `Loading models... (attempt ${attemptId})`;
+
+  const timeoutId = setTimeout(() => {
+    if (attemptId !== loadAttempt) return;
+    scheduleRetry('模型加载超时，10 秒后自动重试...');
+  }, loadTimeoutMs);
+
+  Promise.all(modelPaths.map(loadGLB))
+    .then(([outer, inner]) => {
+      if (attemptId !== loadAttempt) return;
+      clearTimeout(timeoutId);
+      outerModel = outer;
+      innerModel = inner;
+
+      outerModel.traverse(node => {
+        if (node.isMesh) {
+          node.material = node.material.clone();
+          node.material.transparent = false;
+          node.material.depthWrite = true;
+          node.material.depthTest = true;
+          node.material.emissive = new THREE.Color(0.08, 0.1, 0.18);
+          node.material.emissiveIntensity = 0.7;
+          if (typeof node.material.metalness !== 'undefined') node.material.metalness = 0.6;
+          if (typeof node.material.roughness !== 'undefined') node.material.roughness = 0.35;
+          applyOuterMaterialEffects(node.material);
+          outerScanMaterials.push(node.material);
+        }
+      });
+
+      innerModel.traverse(node => {
+        if (node.isMesh) {
+          node.material = node.material.clone();
+          node.material.emissive = new THREE.Color(1, 1, 1);
+          node.material.emissiveIntensity = 1.8; // inner 强烈 RGB 发光
+          if (node.material.map) node.material.emissiveMap = node.material.map;
+          if (typeof node.material.metalness !== 'undefined') node.material.metalness = 0.7;
+          if (typeof node.material.roughness !== 'undefined') node.material.roughness = 0.18;
+        }
+      });
+
+      innerModel.scale.multiplyScalar(1.001); // 轻微放大 inner 防止 z-fighting
+
+      scene.add(outerModel);
+      scene.add(innerModel);
+
+      const box = new THREE.Box3().setFromObject(innerModel);
+      const center = new THREE.Vector3();
+      box.getCenter(center);
+      lightAnchor.position.copy(center); // 光源锚点放在 inner 中心
+      const outerBox = new THREE.Box3().setFromObject(outerModel);
+      const sphere = new THREE.Sphere();
+      outerBox.getBoundingSphere(sphere);
+      outerBoundsRadius = Math.max(sphere.radius, 0.001);
+      scanState.maxRadius = outerBoundsRadius * 2.2;
+      scanState.width = outerBoundsRadius * 0.15;
+      scanState.speed = scanState.maxRadius / scanState.duration;
+      scanState.radius = -1;
+      scanState.active = false;
+      scanState.hasHit = false;
+      containerHint.style.display = 'none';
+    })
+    .catch(err => {
+      if (attemptId !== loadAttempt) return;
+      clearTimeout(timeoutId);
+      console.error('Load error', err);
+      scheduleRetry('模型加载失败，10 秒后自动重试...');
     });
+}
 
-    innerModel.traverse(node => {
-      if (node.isMesh) {
-        node.material = node.material.clone();
-        node.material.emissive = new THREE.Color(1, 1, 1);
-        node.material.emissiveIntensity = 1.6; // inner 强烈 RGB 发光
-        if (node.material.map) node.material.emissiveMap = node.material.map;
-        if (typeof node.material.metalness !== 'undefined') node.material.metalness = 0.5;
-        if (typeof node.material.roughness !== 'undefined') node.material.roughness = 0.25;
-      }
-    });
+loadModels();
 
-    innerModel.scale.multiplyScalar(1.001); // 轻微放大 inner 防止 z-fighting
+let mouse3D = new THREE.Vector3();
+let isPointerActive = false;
+let isDragging = false;
+const targetCameraOffset = new THREE.Vector3();
+const currentCameraOffset = new THREE.Vector3();
 
-    scene.add(outerModel);
-    scene.add(innerModel);
+renderer.domElement.addEventListener('pointerdown', () => {
+  isDragging = true;
+});
 
-    const box = new THREE.Box3().setFromObject(innerModel);
-    const center = new THREE.Vector3();
-    box.getCenter(center);
-    lightAnchor.position.copy(center); // 光源锚点放在 inner 中心
-    containerHint.style.display = 'none';
-  })
-  .catch(err => {
-    console.error('Load error', err);
-    containerHint.innerText = '模型加载失败：请确认 outer.glb 与 inner.glb 与 index.html 同目录并通过 HTTP(s) 访问。';
-  });
+renderer.domElement.addEventListener('pointerup', () => {
+  isDragging = false;
+});
+
+renderer.domElement.addEventListener('pointermove', event => {
+  const rect = renderer.domElement.getBoundingClientRect();
+  pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+  pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+  isPointerActive = true;
+});
+
+renderer.domElement.addEventListener('pointerleave', () => {
+  isPointerActive = false;
+  isDragging = false;
+});
+
+renderer.domElement.addEventListener('click', event => {
+  if (!outerModel) return;
+  const now = performance.now();
+  if (now - lastScanTime < scanCooldownMs) return;
+  const rect = renderer.domElement.getBoundingClientRect();
+  pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+  pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+  raycaster.setFromCamera(pointer, camera);
+  const hits = raycaster.intersectObject(outerModel, true);
+  if (hits.length) {
+    const hitPoint = hits[0].point;
+    
+    const r = rippleStates[currentRippleIndex];
+    r.center.copy(hitPoint);
+    r.radius = 0;
+    r.age = 0;
+    r.active = true;
+    
+    currentRippleIndex = (currentRippleIndex + 1) % MAX_RIPPLES;
+    lastScanTime = now;
+  }
+});
 
 function rgbCycle(time) {
   const t = time * 0.001;
@@ -290,15 +530,34 @@ function animate(time = 0) {
   const dt = time - lastTime;
   lastTime = time;
 
-  const orbitAngle = time * orbitSpeed;
-  const orbitY = orbitHeightOffset + Math.sin(time * 0.0006) * orbitVerticalRange;
-  camera.position.set(
-    lightAnchor.position.x + Math.cos(orbitAngle) * orbitRadius,
-    orbitY,
-    lightAnchor.position.z + Math.sin(orbitAngle) * orbitRadius
-  );
+  // 1. 先去除上一帧的附加晃动偏移，让 controls.update 基于真实的视点
+  camera.position.sub(currentCameraOffset);
+  
   controls.target.copy(lightAnchor.position);
   controls.update();
+
+  // 2. 计算基于鼠标的视角晃动偏移
+  if (isPointerActive && !isDragging) {
+    // 鼠标在屏幕的归一化坐标 (-1 到 1)，加入一点系数控制晃动范围，比如最大晃动0.5到0.8个单位
+    const shakeIntensity = 0.5;
+    
+    // 获取相机的局部坐标系轴（右向量和上向量），使得晃动是基于屏幕平面的
+    const cameraRight = new THREE.Vector3(1, 0, 0).applyQuaternion(camera.quaternion);
+    const cameraUp = new THREE.Vector3(0, 1, 0).applyQuaternion(camera.quaternion);
+    
+    targetCameraOffset.copy(cameraRight).multiplyScalar(pointer.x * shakeIntensity);
+    targetCameraOffset.add(cameraUp.clone().multiplyScalar(pointer.y * shakeIntensity));
+  } else {
+    // 鼠标拖拽视角或者移出屏幕时，归零回原位
+    targetCameraOffset.set(0, 0, 0);
+  }
+
+  // 使用平滑插值过渡到目标偏移
+  currentCameraOffset.lerp(targetCameraOffset, 0.05);
+
+  // 3. 将新的晃动偏移施加到相机上
+  camera.position.add(currentCameraOffset);
+  camera.lookAt(controls.target);
 
   if (innerModel) {
     const rgb = rgbCycle(time);
@@ -324,6 +583,8 @@ function animate(time = 0) {
     radialBlurMaterial.uniforms.samples.value = 60.0;
   }
 
+  neonGroup.position.copy(lightAnchor.position);
+
   /* 1) 渲染场景到 renderTarget */
   renderer.setRenderTarget(renderTarget);
   renderer.clear();
@@ -348,18 +609,100 @@ function animate(time = 0) {
     outerModel.rotation.y += 0.0001 * dt;
   }
 
+  const dtSeconds = dt * 0.001;
+  const activeFlags = [];
+  const radii = [];
+  const centers = [];
+  
+  for (let i = 0; i < MAX_RIPPLES; i++) {
+    const r = rippleStates[i];
+    if (r.active) {
+      r.age += dtSeconds;
+      r.radius = scanState.speed * r.age;
+      if (r.age >= scanState.duration || r.radius > scanState.maxRadius) {
+        r.active = false;
+      }
+    }
+    activeFlags.push(r.active ? 1.0 : 0.0);
+    radii.push(r.radius);
+    centers.push(r.center);
+  }
+
+  if (outerScanMaterials.length) {
+    for (const material of outerScanMaterials) {
+      const uniforms = material.userData.outerShaderUniforms;
+      if (!uniforms) continue;
+      // Copy arrays into uniforms
+      uniforms.scanCenters.value = centers;
+      uniforms.scanRadii.value = radii;
+      uniforms.scanActiveFlags.value = activeFlags;
+      
+      uniforms.scanWidth.value = scanState.width;
+      uniforms.scanGridScale.value = 5.0 / outerBoundsRadius;
+    }
+  }
+
+  // 每一帧都根据摄像机当前姿态以及最新鼠标坐标，更新鼠标在3D空间中的位置
+  if (isPointerActive) {
+    raycaster.setFromCamera(pointer, camera);
+    const cameraDir = new THREE.Vector3();
+    camera.getWorldDirection(cameraDir);
+    const planePos = lightAnchor ? lightAnchor.position : new THREE.Vector3();
+    const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(cameraDir, planePos);
+    raycaster.ray.intersectPlane(plane, mouse3D);
+  }
+
   /* 粒子云动画 */
   if (particleCloud) {
     const positions = particleGeometry.getAttribute('position');
     const colors = particleGeometry.getAttribute('color');
+    let attractedCount = 0;
+    const maxAttractCount = 25; // 【严格限制数量】：一次最多只允许少部分粒子被吸引，防止大面积聚拢
+
     for (let i = 0; i < particleCount; i++) {
       const info = particleInfos[i];
       const idx = i * 3;
-      particlePositions[idx + 0] += info.velocity.x;
-      particlePositions[idx + 1] += info.velocity.y;
-      particlePositions[idx + 2] += info.velocity.z;
+      
+      let isBeingAttracted = false;
+
+      // 全屏鼠标微吸引力计算
+      if (isPointerActive && attractedCount < maxAttractCount) {
+        const particleWorldPos = new THREE.Vector3(
+          particlePositions[idx + 0],
+          particlePositions[idx + 1],
+          particlePositions[idx + 2]
+        ).add(lightAnchor.position);
+        
+        const distToMouse = particleWorldPos.distanceTo(mouse3D);
+        
+        // 【控制吸引距离】：只吸引鼠标附近较近(距离4.0以内)的粒子，并在极近距离(0.8)保留盲区防止扎堆点上
+        if (distToMouse < 4.0 && distToMouse > 0.8) {
+          // 增加过滤门槛，让响应更稀疏且有呼吸感
+          if (Math.sin(i * 13.7 + time * 0.0015) > 0.2) {
+            const dir = new THREE.Vector3().subVectors(mouse3D, particleWorldPos).normalize();
+            // 【控制幅度限制】：大幅降低最大吸引加速度，让运动显得很微弱、克制
+            const forceStrength = Math.min((4.0 - distToMouse) * 0.0012, 0.004);
+            const targetVelocity = dir.multiplyScalar(forceStrength);
+            // 线性插值滑动速度，制造平滑吸附和流畅转弯的效果
+            info.mouseVelocity.lerp(targetVelocity, 0.03);
+            isBeingAttracted = true;
+            attractedCount++;
+          }
+        }
+      }
+
+      // 没被引力直接拉扯的粒子，其鼠标附加速度会慢慢衰减至0，平滑恢复原状
+      if (!isBeingAttracted) {
+        info.mouseVelocity.lerp(new THREE.Vector3(0, 0, 0), 0.02);
+      }
+
+      particlePositions[idx + 0] += info.velocity.x + info.mouseVelocity.x;
+      particlePositions[idx + 1] += info.velocity.y + info.mouseVelocity.y;
+      particlePositions[idx + 2] += info.velocity.z + info.mouseVelocity.z;
+      
       const drift = Math.sin(time * 0.002 + info.drift) * 0.002;
       particlePositions[idx + 0] += drift;
+      particlePositions[idx + 1] += drift * 0.5;
       particlePositions[idx + 2] += drift * 0.5;
 
       const relPos = new THREE.Vector3(
@@ -368,16 +711,17 @@ function animate(time = 0) {
         particlePositions[idx + 2]
       );
       const dist = relPos.length();
-      const maxRadius = 10.45;
+      const maxRadius = 12.0;
       if (dist > maxRadius) {
-        // 超出范围的粒子直接移回 lightAnchor 中心，避免跑偏
+        // 超出范围的粒子直接移回 lightAnchor 中心，并清除吸引力动量
         particlePositions[idx + 0] = 0;
         particlePositions[idx + 1] = 0;
         particlePositions[idx + 2] = 0;
+        info.mouseVelocity.set(0, 0, 0);
         info.velocity.set(
-          (Math.random() - 0.5) * 0.001,
-          (Math.random() - 0.5) * 0.001,
-          (Math.random() - 0.5) * 0.001
+          (Math.random() - 0.5) * 0.002,
+          (Math.random() - 0.5) * 0.002,
+          (Math.random() - 0.5) * 0.002
         );
       }
 
