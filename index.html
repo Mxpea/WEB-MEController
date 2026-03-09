@@ -462,15 +462,20 @@ loadModels();
 let mouse3D = new THREE.Vector3();
 let isPointerActive = false;
 let isDragging = false;
+let lastInteractTime = performance.now();
 const targetCameraOffset = new THREE.Vector3();
 const currentCameraOffset = new THREE.Vector3();
+const defaultCamSpherical = new THREE.Spherical().setFromVector3(new THREE.Vector3(3.2, 3.8, 4.2));
 
+// ... events ...
 renderer.domElement.addEventListener('pointerdown', () => {
   isDragging = true;
+  lastInteractTime = performance.now();
 });
 
 renderer.domElement.addEventListener('pointerup', () => {
   isDragging = false;
+  lastInteractTime = performance.now();
 });
 
 renderer.domElement.addEventListener('pointermove', event => {
@@ -478,12 +483,16 @@ renderer.domElement.addEventListener('pointermove', event => {
   pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
   pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
   isPointerActive = true;
+  lastInteractTime = performance.now();
 });
 
 renderer.domElement.addEventListener('pointerleave', () => {
   isPointerActive = false;
   isDragging = false;
+  lastInteractTime = performance.now();
 });
+
+// For click ripples, wait let's grep 'addEventListener('click')' to update that too if it exists.
 
 renderer.domElement.addEventListener('click', event => {
   if (!outerModel) return;
@@ -537,7 +546,10 @@ function animate(time = 0) {
   controls.update();
 
   // 2. 计算基于鼠标的视角晃动偏移
-  if (isPointerActive && !isDragging) {
+  const idleTime = performance.now() - lastInteractTime;
+  const isIdle = idleTime > 5000; // 5秒不动进入空闲状态
+
+  if (isPointerActive && !isDragging && !isIdle) {
     // 鼠标在屏幕的归一化坐标 (-1 到 1)，加入一点系数控制晃动范围，比如最大晃动0.5到0.8个单位
     const shakeIntensity = 0.5;
     
@@ -548,14 +560,28 @@ function animate(time = 0) {
     targetCameraOffset.copy(cameraRight).multiplyScalar(pointer.x * shakeIntensity);
     targetCameraOffset.add(cameraUp.clone().multiplyScalar(pointer.y * shakeIntensity));
   } else {
-    // 鼠标拖拽视角或者移出屏幕时，归零回原位
+    // 鼠标拖拽视角、移出屏幕或超过5秒不动时，晃动归零
     targetCameraOffset.set(0, 0, 0);
+  }
+
+  // 3. 长时间不动时，不仅去除晃动，还将主视角平滑恢复到原始的高度（极角）和缩放（距离半径），同时允许自动旋转继续运行生效
+  if (isIdle && !isDragging) {
+    const currentSpherical = new THREE.Spherical().setFromVector3(
+      camera.position.clone().sub(controls.target)
+    );
+    // 平滑插值半径和仰角，保留方位角(theta)由 autoRotate 继续控制
+    currentSpherical.radius = THREE.MathUtils.lerp(currentSpherical.radius, defaultCamSpherical.radius, 0.015);
+    currentSpherical.phi = THREE.MathUtils.lerp(currentSpherical.phi, defaultCamSpherical.phi, 0.015);
+    currentSpherical.makeSafe();
+    
+    // 更新回相机
+    camera.position.copy(new THREE.Vector3().setFromSpherical(currentSpherical).add(controls.target));
   }
 
   // 使用平滑插值过渡到目标偏移
   currentCameraOffset.lerp(targetCameraOffset, 0.05);
 
-  // 3. 将新的晃动偏移施加到相机上
+  // 4. 将新的晃动偏移施加到相机上
   camera.position.add(currentCameraOffset);
   camera.lookAt(controls.target);
 
