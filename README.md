@@ -1,7 +1,7 @@
 
 # WEB-MEController
 
-This is a ME Controller model with fancy visual effect running on web, you  can download it for you desktop  
+This is a ME Controller model with fancy visual effect running on web,use Three.js, you  can download it for you desktop  
 texture & Model form my self  
 
 Preview the effect here:
